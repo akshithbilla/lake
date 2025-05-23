@@ -13,7 +13,7 @@ import nodemailer from "nodemailer";
 import path from "path";
 import { fileURLToPath } from "url";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
+//import nodemailer from "nodemailer";
 import cookieParser from "cookie-parser";
 dotenv.config();
 

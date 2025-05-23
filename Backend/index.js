@@ -15,6 +15,7 @@ import { fileURLToPath } from "url";
 import jwt from "jsonwebtoken";
 //import nodemailer from "nodemailer";
 import cookieParser from "cookie-parser";
+import MongoStore from 'connect-mongo';
 dotenv.config();
 
 const app = express();
@@ -36,7 +37,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use(session({
   secret: process.env.JWT_SECRET,
   resave: false,
-  saveUninitialized: false
+  saveUninitialized: false,
+     store: MongoStore.create({
+    mongoUrl: process.env.MONGODB_URI,
+  })
 }));
 app.use(passport.initialize());
 app.use(passport.session());
@@ -45,10 +49,18 @@ app.use(passport.session());
 
 
 // MongoDB
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB connected"))
-  .catch(err => console.log(err));
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => console.log("MongoDB connected"))
+  .catch(err => console.error("Mongo connection error:", err));
 
+  const userSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  isVerified: { type: Boolean, default: false },
+  loginCount: { type: Number, default: 0 }
+});
 // JWT Middleware
 const authMiddleware = (req, res, next) => {
   const token = req.cookies.token;

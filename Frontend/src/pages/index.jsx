@@ -37,43 +37,74 @@ export default function IndexPage() {
   const [siteGenerated, setSiteGenerated] = useState(false);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        setIsLoading(true);
-        setError(null);
-        const res = await fetch('/api/profiles/me', {
-          credentials: 'include'
-        });
-        
-        if (!res.ok) {
-          if (res.status === 404) {
-            // No profile exists - show setup form
-            setActiveTab('setup');
-            return;
-          }
-          throw new Error('Failed to fetch profile');
+  const fetchProfile = async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      // First check authentication status
+      const authCheck = await fetch(`${process.env.BACKEND_URL}/check-auth`, {
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json'
         }
+      });
 
-        const data = await res.json();
-        setProfile({
-          ...defaultProfile,
-          ...data,
-          projects: Array.isArray(data.projects) ? data.projects : [],
-          stats: {
-            totalProjects: Array.isArray(data.projects) ? data.projects.length : 0
-          }
-        });
-
-      } catch (err) {
-        console.error('Profile fetch error:', err);
-        setError(err.message);
-        setActiveTab('setup'); // Fallback to setup if there's any error
-      } finally {
-        setIsLoading(false);
+      if (!authCheck.ok) {
+        if (authCheck.status === 401) {
+          navigate('/login');
+          return;
+        }
+        throw new Error(`Auth check failed with status ${authCheck.status}`);
       }
-    };
 
+      const authData = await authCheck.json();
+      if (!authData.authenticated) {
+        navigate('/login');
+        return;
+      }
+
+      // Then fetch profile data
+      const profileRes = await fetch(`${process.env.BACKEND_URL}/api/profiles/me`, {
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!profileRes.ok) {
+        if (profileRes.status === 404) {
+          setActiveTab('setup');
+          return;
+        }
+        throw new Error('Failed to fetch profile');
+      }
+
+      const profileData = await profileRes.json();
+      setProfile({
+        ...defaultProfile,
+        ...profileData,
+        projects: Array.isArray(profileData.projects) ? profileData.projects : [],
+        stats: {
+          totalProjects: Array.isArray(profileData.projects) ? profileData.projects.length : 0
+        }
+      });
+
+    } catch (err) {
+      console.error('Profile fetch error:', err);
+      setError(err.message);
+      
+      if (err.message.includes('401') || err.message.includes('auth')) {
+        navigate('/login');
+      } else {
+        setActiveTab('setup');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchProfile();
   }, []);
 
@@ -82,22 +113,19 @@ export default function IndexPage() {
       setIsLoading(true);
       setError(null);
       
-      // First check if username exists
-      const checkRes = await fetch(`/api/profiles/check-username?username=${encodeURIComponent(username)}`, {
-        credentials: 'include'
-      });
+      // Check username availability
+      const checkRes = await fetch(
+        `${process.env.BACKEND_URL}/api/profiles/check-username?username=${encodeURIComponent(username)}`,
+        { credentials: 'include' }
+      );
       
-      if (!checkRes.ok) {
-        throw new Error('Failed to check username availability');
-      }
+      if (!checkRes.ok) throw new Error('Failed to check username');
       
       const checkData = await checkRes.json();
-      if (checkData.exists) {
-        throw new Error('Username already exists. Please try another one.');
-      }
+      if (checkData.exists) throw new Error('Username already taken');
       
-      // If username is available, create profile
-      const res = await fetch('/api/profiles', {
+      // Create profile
+      const res = await fetch(`${process.env.BACKEND_URL}/api/profiles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username }),
@@ -131,14 +159,11 @@ export default function IndexPage() {
     try {
       setIsGeneratingSite(true);
       setError(null);
-      
-      // Simulate site generation (replace with actual API call)
       await new Promise(resolve => setTimeout(resolve, 1500));
-      
       setSiteGenerated(true);
     } catch (err) {
       console.error('Site generation error:', err);
-      setError('Failed to generate site. Please try again.');
+      setError('Failed to generate site');
     } finally {
       setIsGeneratingSite(false);
     }
@@ -199,9 +224,7 @@ export default function IndexPage() {
             onSubmit={(e) => {
               e.preventDefault();
               const username = e.target.username.value.trim();
-              if (username) {
-                handleCreateProfile(username);
-              }
+              if (username) handleCreateProfile(username);
             }}
             className="space-y-6"
           >
@@ -225,7 +248,6 @@ export default function IndexPage() {
               />
               <p className="mt-1 text-xs text-gray-500">3-20 characters, letters and numbers only</p>
               
-              {/* Live URL preview */}
               {usernameInput && (
                 <div className="mt-2 flex items-center text-sm text-gray-600">
                   <LinkIcon className="h-4 w-4 mr-1" />

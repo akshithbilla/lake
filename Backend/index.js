@@ -444,17 +444,26 @@ app.post('/api/profiles', async (req, res) => {
 // Get current user's profile
 app.get('/api/profiles/me', async (req, res) => {
   if (!req.isAuthenticated()) {
-    return res.status(401).json({ message: "Not authenticated" });
+    return res.status(401).json({ 
+      authenticated: false,
+      message: "Not authenticated" 
+    });
   }
 
   try {
     const profile = await Project.findOne({ userId: req.user._id });
     if (!profile) {
-      return res.status(404).json({ message: "Profile not found" });
+      return res.status(404).json({ 
+        message: "Profile not found",
+        profile: null 
+      });
     }
     res.json(profile);
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ 
+      message: "Server error",
+      error: err.message 
+    });
   }
 });
 
@@ -601,221 +610,7 @@ app.delete('/api/profiles/me/projects/:projectId', async (req, res) => {
 });
 
 // Admin Routes (unchanged) -------------------------------------------------------
-// Updated Admin Routes -------------------------------------------------------
-app.get("/admin", isAdmin, async (req, res) => {
-  try {
-    // Get all users with their profiles
-    const users = await User.find().lean();
-    const profiles = await Project.find().lean();
-    
-    // Get statistics
-    const totalUsers = await User.countDocuments();
-    const verifiedUsers = await User.countDocuments({ isVerified: true });
-    const usersWithProfiles = await Project.countDocuments();
-    const totalProjects = await Project.aggregate([
-      { $unwind: "$projects" },
-      { $count: "total" }
-    ]);
-    
-    // Combine user data with their profiles
-    const userData = users.map(user => {
-      const userProfile = profiles.find(p => p.userId && p.userId.toString() === user._id.toString());
-      return {
-        ...user,
-        hasProfile: !!userProfile,
-        username: userProfile?.username || 'N/A',
-        projectCount: userProfile?.projects?.length || 0
-      };
-    });
 
-    res.json({
-      users: userData,
-      stats: {
-        totalUsers,
-        verifiedUsers,
-        usersWithProfiles: usersWithProfiles || 0,
-        totalProjects: totalProjects[0]?.total || 0,
-        activeSessions: req.sessionStore?.length || 'N/A'
-      },
-      currentAdmin: {
-        email: req.user.email,
-        lastLogin: req.session.cookie._expires
-      }
-    });
-  } catch (err) {
-    console.error("Admin error:", err);
-    res.status(500).json({ message: "Error loading admin data" });
-  }
-});
-
-// Enhanced Admin User Management
-app.post("/admin/users/:id", isAdmin, async (req, res) => {
-  try {
-    const { action, data } = req.body;
-    const userId = req.params.id;
-
-    switch (action) {
-      case 'delete':
-        await User.findByIdAndDelete(userId);
-        await Project.deleteMany({ userId });
-        break;
-      
-      case 'verify':
-        await User.findByIdAndUpdate(userId, { 
-          isVerified: true, 
-          verificationToken: null 
-        });
-        break;
-      
-      case 'reset-password':
-        const hashed = await bcrypt.hash(data.newPassword, 10);
-        await User.findByIdAndUpdate(userId, {
-          password: hashed,
-          resetToken: null,
-          resetTokenExpiry: null,
-        });
-        break;
-      
-      case 'update-email':
-        await User.findByIdAndUpdate(userId, { email: data.newEmail });
-        break;
-      
-      case 'toggle-admin':
-        // This would require adding an isAdmin field to the User schema
-        // await User.findByIdAndUpdate(userId, { isAdmin: data.isAdmin });
-        // For now using the existing ADMIN_EMAILS approach
-        return res.status(400).json({ message: "Admin status is managed via ADMIN_EMAILS in .env" });
-      
-      case 'impersonate':
-        // Only allow if in development
-        if (process.env.NODE_ENV === 'development') {
-          const user = await User.findById(userId);
-          req.login(user, (err) => {
-            if (err) throw err;
-            return res.json({ message: `Now impersonating ${user.email}` });
-          });
-        } else {
-          return res.status(403).json({ message: "Impersonation only allowed in development" });
-        }
-        break;
-      
-      default:
-        return res.status(400).json({ message: "Invalid action" });
-    }
-
-    res.json({ message: `Action ${action} completed successfully` });
-  } catch (err) {
-    console.error("Admin user action error:", err);
-    res.status(500).json({ message: "Error performing admin action" });
-  }
-});
-
-// Admin Profile Management
-app.get("/admin/profiles", isAdmin, async (req, res) => {
-  try {
-    const { search, sort = 'createdAt', order = 'desc' } = req.query;
-    
-    let query = {};
-    if (search) {
-      query.$or = [
-        { username: { $regex: search, $options: 'i' } },
-        { 'profile.name': { $regex: search, $options: 'i' } },
-        { 'profile.socialLinks.github': { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    const sortOption = {};
-    sortOption[sort] = order === 'desc' ? -1 : 1;
-
-    const profiles = await Project.find(query)
-      .sort(sortOption)
-      .populate('userId', 'email isVerified');
-
-    res.json(profiles);
-  } catch (err) {
-    console.error("Admin profiles error:", err);
-    res.status(500).json({ message: "Error fetching profiles" });
-  }
-});
-
-app.post("/admin/profiles/:id", isAdmin, async (req, res) => {
-  try {
-    const { action, data } = req.body;
-    const profileId = req.params.id;
-
-    switch (action) {
-      case 'delete':
-        await Project.findByIdAndDelete(profileId);
-        break;
-      
-      case 'update':
-        await Project.findByIdAndUpdate(profileId, data);
-        break;
-      
-      case 'feature-project':
-        await Project.updateOne(
-          { _id: profileId, "projects._id": data.projectId },
-          { $set: { "projects.$.featured": data.featured } }
-        );
-        break;
-      
-      case 'transfer-ownership':
-        const newUser = await User.findById(data.newUserId);
-        if (!newUser) {
-          return res.status(404).json({ message: "New user not found" });
-        }
-        await Project.findByIdAndUpdate(profileId, { userId: data.newUserId });
-        break;
-      
-      default:
-        return res.status(400).json({ message: "Invalid action" });
-    }
-
-    res.json({ message: `Profile action ${action} completed` });
-  } catch (err) {
-    console.error("Admin profile action error:", err);
-    res.status(500).json({ message: "Error performing profile action" });
-  }
-});
-
-// Admin System Controls
-app.get("/admin/system", isAdmin, async (req, res) => {
-  try {
-    const systemInfo = {
-      nodeVersion: process.version,
-      platform: process.platform,
-      memoryUsage: process.memoryUsage(),
-      uptime: process.uptime(),
-      databaseStats: await mongoose.connection.db.stats(),
-      sessionCount: req.sessionStore?.length || 'N/A',
-      environment: process.env.NODE_ENV,
-      adminEmails: process.env.ADMIN_EMAILS.split(',')
-    };
-
-    res.json(systemInfo);
-  } catch (err) {
-    console.error("Admin system error:", err);
-    res.status(500).json({ message: "Error fetching system info" });
-  }
-});
-
-app.post("/admin/system/maintenance", isAdmin, async (req, res) => {
-  try {
-    const { mode, message } = req.body;
-    // In a real app, you would set this in a way that all routes can check it
-    // For example using a global variable or database flag
-    if (mode === 'enable') {
-      // Set maintenance mode
-      res.json({ message: `Maintenance mode enabled: ${message}` });
-    } else {
-      // Disable maintenance mode
-      res.json({ message: "Maintenance mode disabled" });
-    }
-  } catch (err) {
-    console.error("Admin maintenance error:", err);
-    res.status(500).json({ message: "Error toggling maintenance mode" });
-  }
-});
 // Start Server
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);

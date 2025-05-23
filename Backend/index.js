@@ -26,12 +26,25 @@ const __dirname = path.dirname(__filename);
 // Middleware ---------------------------------------------------------------------
 
 
-app.use(express.json());
+ 
 app.use(cookieParser());
+const allowedOrigins = ['https://lake-pi.vercel.app'];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL,
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow requests with no origin (e.g. mobile apps, curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true // Allow cookies / credentials
 }));
+
+ 
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(session({

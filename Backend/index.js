@@ -38,9 +38,10 @@ app.use(session({
   secret: process.env.JWT_SECRET,
   resave: false,
   saveUninitialized: false,
-     store: MongoStore.create({
-    mongoUrl: process.env.MONGODB_URI,
-  })
+   store: MongoStore.create({
+  mongoUrl: process.env.MONGO_URI,
+})
+
 }));
 app.use(passport.initialize());
 app.use(passport.session());

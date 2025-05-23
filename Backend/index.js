@@ -12,7 +12,9 @@ import crypto from "crypto";
 import nodemailer from "nodemailer";
 import path from "path";
 import { fileURLToPath } from "url";
-
+import jwt from "jsonwebtoken";
+import nodemailer from "nodemailer";
+import cookieParser from "cookie-parser";
 dotenv.config();
 
 const app = express();
@@ -21,48 +23,44 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Middleware ---------------------------------------------------------------------
-app.use(cors({
-  origin: process.env.FRONTEND_URL,
-  credentials: true,
-}));
+
 
 app.use(express.json());
+app.use(cookieParser());
+app.use(cors({
+  origin: process.env.FRONTEND_URL,
+  credentials: true
+}));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(session({
-  secret: process.env.SESSION_SECRET,
+  secret: process.env.JWT_SECRET,
   resave: false,
-  saveUninitialized: false,
-  cookie: { secure: false, sameSite: 'lax' },
+  saveUninitialized: false
 }));
 app.use(passport.initialize());
 app.use(passport.session());
 
-const isAdmin = (req, res, next) => {
-  const adminEmails = process.env.ADMIN_EMAILS.split(",");
-  if (req.isAuthenticated() && adminEmails.includes(req.user.email)) {
-    return next();
-  }
-  res.status(403).send("Access denied. Admins only.");
+ 
+
+
+// MongoDB
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("MongoDB connected"))
+  .catch(err => console.log(err));
+
+// JWT Middleware
+const authMiddleware = (req, res, next) => {
+  const token = req.cookies.token;
+  if (!token) return res.status(401).json({ message: 'Unauthorized' });
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ message: 'Forbidden' });
+    req.user = user;
+    next();
+  });
 };
 
-// Mongoose Setup -----------------------------------------------------------------
-mongoose.connect(process.env.MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => console.log("MongoDB connected"))
-  .catch(err => console.error("Mongo connection error:", err));
-
-const userSchema = new mongoose.Schema({
-  email: String,
-  password: String,
-  isVerified: { type: Boolean, default: false },
-  verificationToken: String,
-  resetToken: String,
-  resetTokenExpiry: Date,
-   lastLogin: Date,
-  loginCount: { type: Number, default: 0 }
-});
 
 const User = mongoose.model("User", userSchema);
 
@@ -114,7 +112,8 @@ const projectSchema = new mongoose.Schema({
 });
 
 const Project = mongoose.model('Project', projectSchema);
-
+ 
+{/**
 // Passport Config (unchanged) ----------------------------------------------------
 passport.use(new LocalStrategy({ usernameField: "username" }, async (username, password, done) => {
   try {
@@ -126,7 +125,7 @@ passport.use(new LocalStrategy({ usernameField: "username" }, async (username, p
   } catch (err) {
     return done(err);
   }
-}));
+}));  
 
 passport.use(new GoogleStrategy({
   clientID: process.env.GOOGLE_CLIENT_ID,
@@ -149,7 +148,7 @@ passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser(async (id, done) => {
   const user = await User.findById(id);
   done(null, user);
-});
+});*/}
 
 // Email Transport (unchanged) ----------------------------------------------------
 const transporter = nodemailer.createTransport({
@@ -160,112 +159,141 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Passport Google Strategy
+passport.use(new GoogleStrategy({
+  clientID: process.env.GOOGLE_CLIENT_ID,
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+  callbackURL: `${process.env.BACKEND_URL}/auth/google/callback`
+}, async (accessToken, refreshToken, profile, done) => {
+  try {
+    const email = profile.emails[0].value;
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      user = new User({
+        email,
+        password: "google",
+        isVerified: true
+      });
+      await user.save();
+    }
+
+    done(null, user);
+  } catch (err) {
+    done(err);
+  }
+}));
+
+passport.serializeUser((user, done) => done(null, user.id));
+passport.deserializeUser(async (id, done) => {
+  const user = await User.findById(id);
+  done(null, user);
+});
+
 // Routes -------------------------------------------------------------------------
 
 // Authentication Routes (unchanged) ----------------------------------------------
-app.post("/register", async (req, res) => {
-  const { username, password } = req.body;
-  try {
-    const existingUser = await User.findOne({ email: username });
-    if (existingUser) return res.status(400).json({ message: "User already exists" });
+app.post('/register', async (req, res) => {
+  const { email, password } = req.body;
+  const existingUser = await User.findOne({ email });
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const verificationToken = crypto.randomBytes(32).toString("hex");
+  if (existingUser) return res.status(400).json({ message: 'User already exists' });
 
-    const newUser = await User.create({
-      email: username,
-      password: hashedPassword,
-      verificationToken,
-    });
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const verificationToken = crypto.randomBytes(32).toString("hex");
 
-const verifyLink = `${process.env.BACKEND_URL}/verify-email/${verificationToken}`;
+  const newUser = new User({
+    email,
+    password: hashedPassword,
+    isVerified: false,
+    verificationToken
+  });
+  await newUser.save();
 
-await transporter.sendMail({
-  from: '"MyPortfolify" <myportfolify@gmail.com>', // Use your domain email
-  to: username,
-  subject: "Complete Your MyPortfolify Registration",
-  text: `Hi ${username.split('@')[0]}!\n\nWelcome to MyPortfolify! To get started, please verify your email address by clicking the link below:\n\n${verifyLink}\n\nThis link will expire in 24 hours. If you didn't request this, please ignore this email.\n\nThanks,\nThe MyPortfolify Team`,
-  html: `
-    <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-      <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px;">
-        <div style="text-align: center; margin-bottom: 25px;">
-          <h1 style="color: #2c3e50; font-size: 24px; margin: 0;">MyPortfolify</h1>
-        </div>
-        
-        <div style="background-color: white; padding: 30px; border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
-          <h2 style="color: #2c3e50; font-size: 20px; margin-top: 0;">Welcome to MyPortfolify!</h2>
-          <p style="line-height: 1.6;">Hi ${username.split('@')[0]},</p>
-          <p style="line-height: 1.6;">Thank you for creating an account. Please verify your email address to complete your registration and start building your portfolio.</p>
-          
-          <div style="text-align: center; margin: 30px 0;">
-            <a href="${verifyLink}" style="display: inline-block; padding: 12px 24px; background-color: #4f46e5; color: white; text-decoration: none; border-radius: 4px; font-weight: 500; font-size: 16px;">Verify Email Address</a>
-          </div>
-          
-          <p style="line-height: 1.6; font-size: 14px; color: #666;">This verification link will expire in 24 hours. If you didn't create a MyPortfolify account, you can safely ignore this email.</p>
-        </div>
-        
-        <div style="margin-top: 30px; text-align: center; font-size: 12px; color: #777;">
-          <p>© ${new Date().getFullYear()} MyPortfolify. All rights reserved.</p>
-          <p style="margin-bottom: 0;">If you're having trouble with the button above, copy and paste this URL into your browser:</p>
-          <p style="word-break: break-all;">${verifyLink}</p>
-        </div>
-      </div>
-    </div>
-  `,
-});
+  const verifyLink = `${process.env.BACKEND_URL}/verify-email/${verificationToken}`;
+  await transporter.sendMail({
+    from: '"MyPortfolify" <myportfolify@gmail.com>',
+    to: email,
+    subject: "Verify your email",
+    html: `<p>Click <a href="${verifyLink}">here</a> to verify your email.</p>`
+  });
 
-    res.status(200).json({ message: "Registered, verify email sent", user: newUser });
-  } catch (err) {
-    res.status(500).json({ message: "Internal server error" });
-  }
+  res.status(201).json({ message: 'User registered. Verification email sent.' });
 });
 
 app.get("/verify-email/:token", async (req, res) => {
-  const { token } = req.params;
-  try {
-    const user = await User.findOneAndUpdate(
-      { verificationToken: token },
-      { isVerified: true, verificationToken: null },
-      { new: true }
-    );
-    if (!user) return res.status(400).send("Invalid or expired token");
-    res.redirect(`${process.env.FRONTEND_URL}/login?verified=true`);
+  const user = await User.findOne({ verificationToken: req.params.token });
 
-  } catch (err) {
-    res.status(500).send("Server error");
-  }
+  if (!user) return res.status(400).json({ message: "Invalid or expired token." });
+
+  user.isVerified = true;
+  user.verificationToken = undefined;
+  await user.save();
+
+  res.status(200).json({ message: "Email verified successfully!" });
 });
 
-app.post("/login", (req, res, next) => {
-  passport.authenticate("local", (err, user, info) => {
-    if (err) return next(err);
-    if (!user) return res.status(401).json({ message: info.message });
-    if (!user.isVerified) return res.status(403).json({ message: "Please verify your email first" });
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
 
-    req.login(user, (err) => {
-      if (err) return next(err);
-       // Track login
-      User.findByIdAndUpdate(user._id, { 
-        $set: { lastLogin: new Date() },
-        $inc: { loginCount: 1 }
-      }).exec();
-      req.session.save(() => {
-        res.status(200).json({ message: "Logged in", user });
-      });
-    });
-  })(req, res, next);
+  if (!user || !(await bcrypt.compare(password, user.password)))
+    return res.status(400).json({ message: "Invalid credentials" });
+
+  if (!user.isVerified)
+    return res.status(401).json({ message: "Please verify your email first" });
+
+  const token = jwt.sign(
+    { _id: user._id, email: user.email, isVerified: user.isVerified },
+    process.env.JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+
+  res.cookie("token", token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "None",
+    maxAge: 3600000,
+  });
+
+  res.status(200).json({ message: "Login successful" });
+});
+app.get("/logout", (req, res) => {
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: true,
+    sameSite: "None"
+  });
+  res.status(200).json({ message: "Logged out" });
 });
 
-app.get("/auth/google",
-  passport.authenticate("google", { scope: ["profile", "email"] })
-);
+app.get("/check-auth", authMiddleware, async (req, res) => {
+  const user = await User.findById(req.user._id).select("-password");
+  if (!user) return res.status(401).json({ message: "User not found" });
+
+  res.status(200).json({ user });
+});
+
+app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
 app.get("/auth/google/callback",
-  passport.authenticate("google", {
-   successRedirect: `${process.env.FRONTEND_URL}/`,
-failureRedirect: `${process.env.FRONTEND_URL}/login`,
+  passport.authenticate("google", { session: false, failureRedirect: "/" }),
+  (req, res) => {
+    const token = jwt.sign(
+      { _id: req.user._id, email: req.user.email, isVerified: req.user.isVerified },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
-  })
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "None",
+      maxAge: 3600000
+    });
+
+    res.redirect(`${process.env.FRONTEND_URL}/`);
+  }
 );
 
 app.post("/forgot-password", async (req, res) => {
@@ -359,44 +387,19 @@ app.post("/reset-password/:token", async (req, res) => {
   }
 });
 
-app.get("/logout", (req, res) => {
-  req.logout(err => {
-    if (err) return res.status(500).json({ message: "Logout error" });
-    res.status(200).json({ message: "Logged out" });
-  });
-});
-
-app.get("/check-auth", (req, res) => {
-  if (req.isAuthenticated()) {
-    res.status(200).json({
-      authenticated: true,
-      user: {
-        _id: req.user._id,
-        email: req.user.email,
-        isVerified: req.user.isVerified,
-      },
-    });
-  } else {
-    res.status(401).json({ authenticated: false });
-  }
-});
+ 
+ 
 app.get('/', (req, res) => {
   res.send('✅ Server is working!');
 });
 // Profile Routes -----------------------------------------------------------------
-app.get('/api/profiles/check-username', async (req, res) => {
-  const { username } = req.query;
-  if (!username) {
-    return res.status(400).json({ message: "Username is required" });
-  }
+app.get("/api/profiles/me", authMiddleware, async (req, res) => {
+  const profile = await Profile.findOne({ userId: req.user._id });
+  if (!profile) return res.status(404).json({ message: "Profile not found" });
 
-  try {
-    const profile = await Project.findOne({ username });
-    res.json({ exists: !!profile });
-  } catch (err) {
-    res.status(500).json({ message: "Server error" });
-  }
+  res.status(200).json(profile);
 });
+
 
 // Create or get user profile
 app.post('/api/profiles', async (req, res) => {
@@ -442,29 +445,11 @@ app.post('/api/profiles', async (req, res) => {
 });
 
 // Get current user's profile
-app.get('/api/profiles/me', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ 
-      authenticated: false,
-      message: "Not authenticated" 
-    });
-  }
+app.get("/api/profiles/:userId", async (req, res) => {
+  const profile = await Profile.findOne({ userId: req.params.userId });
+  if (!profile) return res.status(404).json({ message: "Profile not found" });
 
-  try {
-    const profile = await Project.findOne({ userId: req.user._id });
-    if (!profile) {
-      return res.status(404).json({ 
-        message: "Profile not found",
-        profile: null 
-      });
-    }
-    res.json(profile);
-  } catch (err) {
-    res.status(500).json({ 
-      message: "Server error",
-      error: err.message 
-    });
-  }
+  res.status(200).json(profile);
 });
 
 // Update profile information

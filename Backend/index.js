@@ -559,7 +559,8 @@ app.get('/auth/google/callback',
     });
 
     // Redirect to frontend
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
+   res.redirect(`${process.env.FRONTEND_URL}/`);
+
   }
 );
 

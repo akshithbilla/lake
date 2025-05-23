@@ -380,7 +380,9 @@ app.get("/check-auth", (req, res) => {
     res.status(401).json({ authenticated: false });
   }
 });
-
+app.get('/', (req, res) => {
+  res.send('✅ Server is working!');
+});
 // Profile Routes -----------------------------------------------------------------
 app.get('/api/profiles/check-username', async (req, res) => {
   const { username } = req.query;

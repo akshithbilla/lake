@@ -468,6 +468,7 @@ app.get('/api/profiles/me', async (req, res) => {
 });
 
 // Update profile information
+// Update profile information
 app.put('/api/profiles/me/profile', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ message: "Not authenticated" });
@@ -486,12 +487,12 @@ app.put('/api/profiles/me/profile', async (req, res) => {
       return res.status(404).json({ message: "Profile not found" });
     }
 
-    res.json(updatedProfile);
+    res.status(200).json(updatedProfile);
   } catch (err) {
-    console.error("Error updating profile:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 });
+
 
 // Update template preference
 app.put('/api/profiles/me/template', async (req, res) => {

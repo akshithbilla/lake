@@ -5,7 +5,7 @@ import bcrypt from "bcrypt";
 import passport from "passport";
 import session from "express-session";
 import { Strategy as LocalStrategy } from "passport-local";
-import { Strategy as GoogleStrategy } from "passport-google-oauth2";
+import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import dotenv from "dotenv";
 import cors from "cors";
 import crypto from "crypto";
@@ -13,26 +13,26 @@ import nodemailer from "nodemailer";
 import path from "path";
 import { fileURLToPath } from "url";
 import jwt from "jsonwebtoken";
-//import nodemailer from "nodemailer";
 import cookieParser from "cookie-parser";
 import MongoStore from 'connect-mongo';
+
 dotenv.config();
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Middleware ---------------------------------------------------------------------
-
-
- 
 app.use(cookieParser());
-const allowedOrigins = ['https://lake-pi.vercel.app'];
+
+const allowedOrigins = [
+  'https://lake-pi.vercel.app',
+  'http://localhost:5173' // For development
+];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (e.g. mobile apps, curl)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
@@ -40,409 +40,679 @@ app.use(cors({
       return callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true // Allow cookies / credentials
+  credentials: true
 }));
 
- 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Enhanced session configuration
 app.use(session({
-  secret: process.env.JWT_SECRET,
+  secret: process.env.JWT_SECRET || 'default-secret-key',
   resave: false,
   saveUninitialized: false,
-   store: MongoStore.create({
-  mongoUrl: process.env.MONGO_URI,
-})
-
+  store: MongoStore.create({
+    mongoUrl: process.env.MONGO_URI,
+    ttl: 14 * 24 * 60 * 60 // 14 days
+  }),
+  cookie: {
+    maxAge: 1000 * 60 * 60 * 24 * 14, // 14 days
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+  }
 }));
+
 app.use(passport.initialize());
 app.use(passport.session());
 
- 
-
-
-// MongoDB
+// MongoDB Connection with enhanced options
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+  retryWrites: true,
+  w: 'majority'
 }).then(() => console.log("MongoDB connected"))
   .catch(err => console.error("Mongo connection error:", err));
 
-  const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
+// Enhanced User Schema with indexes
+const userSchema = new mongoose.Schema({
+  email: { 
+    type: String, 
+    required: true, 
+    unique: true,
+    trim: true,
+    lowercase: true,
+    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please fill a valid email address']
+  },
+  password: { 
+    type: String, 
+    required: function() { return !this.googleId; } // Not required for Google auth
+  },
+  googleId: String,
   isVerified: { type: Boolean, default: false },
-  loginCount: { type: Number, default: 0 }
-});
-// JWT Middleware
-const authMiddleware = (req, res, next) => {
-  const token = req.cookies.token;
-  if (!token) return res.status(401).json({ message: 'Unauthorized' });
+  verificationToken: String,
+  resetToken: String,
+  resetTokenExpiry: Date,
+  loginCount: { type: Number, default: 0 },
+  lastLogin: Date
+}, { timestamps: true });
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ message: 'Forbidden' });
-    req.user = user;
-    next();
-  });
+// Indexes
+userSchema.index({ email: 1 });
+userSchema.index({ verificationToken: 1 });
+userSchema.index({ resetToken: 1 });
+
+// Add methods to user schema
+userSchema.methods.generateVerificationToken = function() {
+  this.verificationToken = crypto.randomBytes(32).toString('hex');
+  return this.verificationToken;
 };
 
+userSchema.methods.generatePasswordResetToken = function() {
+  this.resetToken = crypto.randomBytes(32).toString('hex');
+  this.resetTokenExpiry = Date.now() + 3600000; // 1 hour
+  return this.resetToken;
+};
 
 const User = mongoose.model("User", userSchema);
 
-// Updated Project Schema with new fields
+// Enhanced Project Schema
 const projectSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  username: String,
+  userId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User',
+    required: true,
+    index: true
+  },
+  username: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true,
+    minlength: 3,
+    maxlength: 30,
+    match: [/^[a-zA-Z0-9_-]+$/, 'Username can only contain letters, numbers, underscores and hyphens']
+  },
   projects: [{
-    title: String,
-    description: String,
-    techStack: [String],
-    images: [String],
-    liveUrl: String,
-    githubUrl: String,
-    category: String,
-    featured: Boolean,
+    title: { type: String, required: true, maxlength: 100 },
+    description: { type: String, maxlength: 500 },
+    techStack: [{ type: String, maxlength: 30 }],
+    images: [{ type: String }],
+    liveUrl: { type: String, match: [/https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/, 'Please use a valid URL'] },
+    githubUrl: { type: String, match: [/https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/, 'Please use a valid URL'] },
+    category: { type: String, enum: ['web', 'mobile', 'desktop', 'other'], default: 'web' },
+    featured: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now }
   }],
   profile: {
-    name: String,
-    passionateText: String,
-    bio: String,
-    avatar: String,
+    name: { type: String, maxlength: 100 },
+    passionateText: { type: String, maxlength: 200 },
+    bio: { type: String, maxlength: 1000 },
+    avatar: { type: String },
     socialLinks: {
-      github: String,
-      linkedin: String,
-      twitter: String,
-      personalWebsite: String
+      github: { type: String, match: [/https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/, 'Please use a valid URL'] },
+      linkedin: { type: String, match: [/https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/, 'Please use a valid URL'] },
+      twitter: { type: String, match: [/https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/, 'Please use a valid URL'] },
+      personalWebsite: { type: String, match: [/https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/, 'Please use a valid URL'] }
     },
     skills: [{
-      techName: String,
-      skillsUsed: [String]
+      techName: { type: String, maxlength: 50 },
+      skillsUsed: [{ type: String, maxlength: 50 }]
     }],
     education: [{
-      collegeName: String,
-      branch: String,
-      course: String,
-      yearOfPassout: Number
+      collegeName: { type: String, maxlength: 200 },
+      branch: { type: String, maxlength: 100 },
+      course: { type: String, maxlength: 100 },
+      yearOfPassout: { type: Number, min: 1900, max: new Date().getFullYear() + 10 }
     }],
     workExperience: [{
-      companyName: String,
-      position: String,
-      duration: String,
-      description: String,
-      currentlyWorking: Boolean
+      companyName: { type: String, maxlength: 200 },
+      position: { type: String, maxlength: 100 },
+      duration: { type: String, maxlength: 50 },
+      description: { type: String, maxlength: 500 },
+      currentlyWorking: { type: Boolean, default: false }
     }]
   },
-  template: { type: String, default: 'default' }
-});
+  template: { 
+    type: String, 
+    default: 'default',
+    enum: ['default', 'minimal', 'professional', 'creative']
+  }
+}, { timestamps: true });
 
 const Project = mongoose.model('Project', projectSchema);
- 
-{/**
-// Passport Config (unchanged) ----------------------------------------------------
-passport.use(new LocalStrategy({ usernameField: "username" }, async (username, password, done) => {
+
+// Passport Configuration --------------------------------------------------------
+
+// Local Strategy
+passport.use(new LocalStrategy({ 
+  usernameField: "email",
+  passwordField: "password"
+}, async (email, password, done) => {
   try {
-    const user = await User.findOne({ email: username });
-    if (!user) return done(null, false, { message: "User not found" });
+    const user = await User.findOne({ email });
+    if (!user) {
+      return done(null, false, { message: "User not found" });
+    }
+
+    // For Google-authenticated users without a password
+    if (user.googleId && !user.password) {
+      return done(null, false, { message: "Please login with Google" });
+    }
 
     const isValid = await bcrypt.compare(password, user.password);
-    return isValid ? done(null, user) : done(null, false, { message: "Invalid credentials" });
+    if (!isValid) {
+      return done(null, false, { message: "Invalid credentials" });
+    }
+
+    if (!user.isVerified) {
+      return done(null, false, { message: "Please verify your email first" });
+    }
+
+    // Update login stats
+    user.loginCount += 1;
+    user.lastLogin = new Date();
+    await user.save();
+
+    return done(null, user);
   } catch (err) {
     return done(err);
   }
-}));  
-
-passport.use(new GoogleStrategy({
-  clientID: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  callbackURL:`${process.env.BACKEND_URL}/auth/google/callback`,
-  passReqToCallback: true,
-}, async (req, accessToken, refreshToken, profile, done) => {
-  try {
-    let user = await User.findOne({ email: profile.email });
-    if (!user) {
-      user = await User.create({ email: profile.email, password: "google", isVerified: true });
-    }
-    done(null, user);
-  } catch (err) {
-    done(err);
-  }
 }));
 
-passport.serializeUser((user, done) => done(null, user.id));
-passport.deserializeUser(async (id, done) => {
-  const user = await User.findById(id);
-  done(null, user);
-});*/}
-
-// Email Transport (unchanged) ----------------------------------------------------
-const transporter = nodemailer.createTransport({
-  service: "Gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
-// Passport Google Strategy
+// Google Strategy
 passport.use(new GoogleStrategy({
   clientID: process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  callbackURL: `${process.env.BACKEND_URL}/auth/google/callback`
-}, async (accessToken, refreshToken, profile, done) => {
+  callbackURL: `${process.env.BACKEND_URL}/auth/google/callback`,
+  passReqToCallback: true
+}, async (req, accessToken, refreshToken, profile, done) => {
   try {
     const email = profile.emails[0].value;
     let user = await User.findOne({ email });
 
     if (!user) {
+      // Create new user with Google auth
       user = new User({
         email,
-        password: "google",
+        googleId: profile.id,
         isVerified: true
       });
       await user.save();
+    } else if (!user.googleId) {
+      // Existing user without Google auth - add Google ID
+      user.googleId = profile.id;
+      user.isVerified = true;
+      await user.save();
     }
 
+    // Update login stats
+    user.loginCount += 1;
+    user.lastLogin = new Date();
+    await user.save();
+
+    return done(null, user);
+  } catch (err) {
+    return done(err);
+  }
+}));
+
+// Serialization
+passport.serializeUser((user, done) => {
+  done(null, user.id);
+});
+
+passport.deserializeUser(async (id, done) => {
+  try {
+    const user = await User.findById(id);
     done(null, user);
   } catch (err) {
     done(err);
   }
-}));
-
-passport.serializeUser((user, done) => done(null, user.id));
-passport.deserializeUser(async (id, done) => {
-  const user = await User.findById(id);
-  done(null, user);
 });
 
-// Routes -------------------------------------------------------------------------
+// Email Transport Configuration --------------------------------------------------
+const transporter = nodemailer.createTransport({
+  service: "Gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+  tls: {
+    rejectUnauthorized: false // For local testing only, remove in production
+  }
+});
 
-// Authentication Routes (unchanged) ----------------------------------------------
-app.post('/register', async (req, res) => {
-  const { email, password } = req.body;
-  const existingUser = await User.findOne({ email });
+// Verify email transport
+transporter.verify((error, success) => {
+  if (error) {
+    console.error('Error verifying email transporter:', error);
+  } else {
+    console.log('Email transporter is ready to send messages');
+  }
+});
 
-  if (existingUser) return res.status(400).json({ message: 'User already exists' });
-
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const verificationToken = crypto.randomBytes(32).toString("hex");
-
-  const newUser = new User({
-    email,
-    password: hashedPassword,
-    isVerified: false,
-    verificationToken
-  });
-  await newUser.save();
-
-  const verifyLink = `${process.env.BACKEND_URL}/verify-email/${verificationToken}`;
-  await transporter.sendMail({
-    from: '"MyPortfolify" <myportfolify@gmail.com>',
+// Utility Functions -------------------------------------------------------------
+const sendVerificationEmail = async (email, token) => {
+  const verifyLink = `${process.env.FRONTEND_URL}/verify-email/${token}`;
+  
+  const mailOptions = {
+    from: `"MyPortfolify" <${process.env.EMAIL_USER}>`,
     to: email,
-    subject: "Verify your email",
-    html: `<p>Click <a href="${verifyLink}">here</a> to verify your email.</p>`
+    subject: "Verify Your Email Address",
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2d3748;">Welcome to MyPortfolify!</h2>
+        <p>Please click the button below to verify your email address:</p>
+        <a href="${verifyLink}" 
+           style="display: inline-block; padding: 10px 20px; background-color: #4299e1; 
+                  color: white; text-decoration: none; border-radius: 4px; margin: 20px 0;">
+          Verify Email
+        </a>
+        <p>If you didn't create an account with MyPortfolify, please ignore this email.</p>
+        <p style="font-size: 12px; color: #718096;">This link will expire in 24 hours.</p>
+      </div>
+    `
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`Verification email sent to ${email}`);
+  } catch (err) {
+    console.error(`Error sending verification email to ${email}:`, err);
+    throw err;
+  }
+};
+
+const sendPasswordResetEmail = async (email, token) => {
+  const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
+
+  const mailOptions = {
+    from: `"MyPortfolify Security" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: "Password Reset Request",
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2d3748;">Password Reset Request</h2>
+        <p>We received a request to reset your password. Click the button below to proceed:</p>
+        <a href="${resetLink}" 
+           style="display: inline-block; padding: 10px 20px; background-color: #4299e1; 
+                  color: white; text-decoration: none; border-radius: 4px; margin: 20px 0;">
+          Reset Password
+        </a>
+        <p>If you didn't request a password reset, please ignore this email or contact support.</p>
+        <p style="font-size: 12px; color: #718096;">This link will expire in 1 hour.</p>
+      </div>
+    `
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`Password reset email sent to ${email}`);
+  } catch (err) {
+    console.error(`Error sending password reset email to ${email}:`, err);
+    throw err;
+  }
+};
+
+// JWT Middleware
+const authMiddleware = (req, res, next) => {
+  const token = req.cookies.token || req.headers.authorization?.split(' ')[1];
+  
+  if (!token) {
+    return res.status(401).json({ 
+      success: false,
+      message: 'Unauthorized: No token provided' 
+    });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(403).json({ 
+        success: false,
+        message: 'Forbidden: Invalid token',
+        error: err.message 
+      });
+    }
+    
+    req.user = decoded;
+    next();
   });
+};
 
-  res.status(201).json({ message: 'User registered. Verification email sent.' });
-});
+// Routes ------------------------------------------------------------------------
 
-app.get("/verify-email/:token", async (req, res) => {
-  const user = await User.findOne({ verificationToken: req.params.token });
-
-  if (!user) return res.status(400).json({ message: "Invalid or expired token." });
-
-  user.isVerified = true;
-  user.verificationToken = undefined;
-  await user.save();
-
-  res.status(200).json({ message: "Email verified successfully!" });
-});
-
-app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-  const user = await User.findOne({ email });
-
-  if (!user || !(await bcrypt.compare(password, user.password)))
-    return res.status(400).json({ message: "Invalid credentials" });
-
-  if (!user.isVerified)
-    return res.status(401).json({ message: "Please verify your email first" });
-
-  const token = jwt.sign(
-    { _id: user._id, email: user.email, isVerified: user.isVerified },
-    process.env.JWT_SECRET,
-    { expiresIn: "1h" }
-  );
-
-  res.cookie("token", token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "None",
-    maxAge: 3600000,
+// Health Check
+app.get('/', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy',
+    message: 'MyPortfolify API is running',
+    timestamp: new Date().toISOString()
   });
-
-  res.status(200).json({ message: "Login successful" });
-});
-app.get("/logout", (req, res) => {
-  res.clearCookie("token", {
-    httpOnly: true,
-    secure: true,
-    sameSite: "None"
-  });
-  res.status(200).json({ message: "Logged out" });
 });
 
-app.get("/check-auth", authMiddleware, async (req, res) => {
-  const user = await User.findById(req.user._id).select("-password");
-  if (!user) return res.status(401).json({ message: "User not found" });
+// Authentication Routes ---------------------------------------------------------
 
-  res.status(200).json({ user });
-});
+// Register
+app.post('/register', async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
-app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
+    // Validate input
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email and password are required' 
+      });
+    }
 
-app.get("/auth/google/callback",
-  passport.authenticate("google", { session: false, failureRedirect: "/" }),
-  (req, res) => {
-    const token = jwt.sign(
-      { _id: req.user._id, email: req.user.email, isVerified: req.user.isVerified },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
-    );
+    // Check if user exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ 
+        success: false,
+        message: 'User already exists' 
+      });
+    }
 
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      maxAge: 3600000
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+    
+    // Create user
+    const newUser = new User({
+      email,
+      password: hashedPassword,
+      isVerified: false
     });
 
-    res.redirect(`${process.env.FRONTEND_URL}/`);
+    // Generate verification token
+    const verificationToken = newUser.generateVerificationToken();
+    await newUser.save();
+
+    // Send verification email
+    await sendVerificationEmail(email, verificationToken);
+
+    res.status(201).json({ 
+      success: true,
+      message: 'User registered successfully. Please check your email for verification.' 
+    });
+  } catch (err) {
+    console.error('Registration error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during registration',
+      error: err.message 
+    });
+  }
+});
+
+// Verify Email
+app.get('/verify-email/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const user = await User.findOne({ verificationToken: token });
+
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired verification token' 
+      });
+    }
+
+    user.isVerified = true;
+    user.verificationToken = undefined;
+    await user.save();
+
+    // Redirect to frontend with success message
+    res.redirect(`${process.env.FRONTEND_URL}/login?verified=true`);
+  } catch (err) {
+    console.error('Email verification error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during email verification',
+      error: err.message 
+    });
+  }
+});
+
+// Login
+app.post('/login', (req, res, next) => {
+  passport.authenticate('local', (err, user, info) => {
+    if (err) {
+      return next(err);
+    }
+    
+    if (!user) {
+      return res.status(401).json({ 
+        success: false,
+        message: info.message || 'Authentication failed' 
+      });
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { 
+        _id: user._id, 
+        email: user.email, 
+        isVerified: user.isVerified 
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    // Set cookie
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 3600000 // 1 hour
+    });
+
+    res.status(200).json({ 
+      success: true,
+      message: 'Login successful',
+      user: {
+        _id: user._id,
+        email: user.email,
+        isVerified: user.isVerified
+      }
+    });
+  })(req, res, next);
+});
+
+// Google Auth
+app.get('/auth/google', 
+  passport.authenticate('google', { 
+    scope: ['profile', 'email'],
+    prompt: 'select_account' // Force account selection
+  })
+);
+
+app.get('/auth/google/callback', 
+  passport.authenticate('google', { 
+    failureRedirect: `${process.env.FRONTEND_URL}/login?error=google-auth-failed`,
+    session: false 
+  }),
+  (req, res) => {
+    // Generate JWT token for Google auth
+    const token = jwt.sign(
+      { 
+        _id: req.user._id, 
+        email: req.user.email, 
+        isVerified: req.user.isVerified 
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    // Set cookie
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 3600000 // 1 hour
+    });
+
+    // Redirect to frontend
+    res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
   }
 );
 
-app.post("/forgot-password", async (req, res) => {
-  const { email } = req.body;
-  const token = crypto.randomBytes(32).toString("hex");
-  const expiry = Date.now() + 3600000;
-
-  try {
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    user.resetToken = token;
-    user.resetTokenExpiry = expiry;
-    await user.save();
-
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
-
-await transporter.sendMail({
-  from: '"MyPortfolify Security" <security@myportfolify.com>', // Professional sender
-  to: email,
-  subject: "Password Reset Request for Your MyPortfolify Account",
-  text: `Hi there,\n\nWe received a request to reset your MyPortfolify password. Click the link below to proceed:\n\n${resetLink}\n\nThis link expires in 1 hour for security reasons.\n\nIf you didn't request this, please ignore this email or contact support.\n\n- The MyPortfolify Team`,
-  html: `
-    <div style="font-family: 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-      <div style="background-color: #f8fafc; padding: 30px; border-radius: 8px;">
-        <div style="text-align: center; margin-bottom: 20px;">
-          <h1 style="color: #2c3e50; margin: 0; font-size: 22px;">MyPortfolify</h1>
-          <p style="color: #64748b; font-size: 14px; margin-top: 5px;">Portfolio Management</p>
-        </div>
-
-        <div style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-          <h2 style="color: #1e293b; font-size: 18px; margin-top: 0;">Password Reset Request</h2>
-          <p style="line-height: 1.6;">We received a request to reset the password for your account.</p>
-          
-          <div style="text-align: center; margin: 25px 0;">
-            <a href="${resetLink}" 
-               style="display: inline-block; padding: 12px 24px; background-color: #6366f1; color: white; 
-                      text-decoration: none; border-radius: 6px; font-weight: 500; font-size: 15px;
-                      transition: background-color 0.3s ease;"
-               onMouseOver="this.style.backgroundColor='#4f46e5'" 
-               onMouseOut="this.style.backgroundColor='#6366f1'">
-              Reset Password
-            </a>
-          </div>
-
-          <p style="font-size: 14px; color: #64748b; line-height: 1.5;">
-            <strong>Important:</strong> This link will expire in 1 hour for security reasons. 
-            If you didn't request a password reset, please secure your account by 
-            <a href="mailto:support@myportfolify.com" style="color: #6366f1;">contacting support</a>.
-          </p>
-        </div>
-
-        <div style="margin-top: 30px; text-align: center; font-size: 12px; color: #94a3b8;">
-          <p>© ${new Date().getFullYear()} MyPortfolify. All rights reserved.</p>
-          <p style="margin: 5px 0;">For your security, do not share this email with anyone.</p>
-          <p>If the button doesn't work, copy this URL to your browser:<br>
-            <span style="word-break: break-all; color: #475569;">${resetLink}</span>
-          </p>
-        </div>
-      </div>
-    </div>
-  `
+// Logout
+app.get('/logout', (req, res) => {
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+  });
+  
+  res.status(200).json({ 
+    success: true,
+    message: 'Logged out successfully' 
+  });
 });
 
-    res.status(200).json({ message: "Reset link sent" });
+// Check Auth Status
+app.get('/check-auth', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('-password -verificationToken');
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
+    }
+
+    res.status(200).json({ 
+      success: true,
+      user 
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error('Check auth error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error checking auth status',
+      error: err.message 
+    });
   }
 });
 
-app.post("/reset-password/:token", async (req, res) => {
-  const { token } = req.params;
-  const { password } = req.body;
-
+// Forgot Password
+app.post('/forgot-password', async (req, res) => {
   try {
-    const user = await User.findOne({
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      // Don't reveal if user doesn't exist for security
+      return res.status(200).json({ 
+        success: true,
+        message: 'If an account with that email exists, a reset link has been sent' 
+      });
+    }
+
+    // Generate and save reset token
+    const resetToken = user.generatePasswordResetToken();
+    await user.save();
+
+    // Send reset email
+    await sendPasswordResetEmail(email, resetToken);
+
+    res.status(200).json({ 
+      success: true,
+      message: 'Password reset link sent to your email' 
+    });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error processing password reset',
+      error: err.message 
+    });
+  }
+});
+
+// Reset Password
+app.post('/reset-password/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { password } = req.body;
+
+    if (!password || password.length < 8) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Password must be at least 8 characters' 
+      });
+    }
+
+    const user = await User.findOne({ 
       resetToken: token,
-      resetTokenExpiry: { $gt: Date.now() },
+      resetTokenExpiry: { $gt: Date.now() }
     });
 
-    if (!user) return res.status(400).json({ message: "Invalid or expired token" });
+    if (!user) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired reset token' 
+      });
+    }
 
-    user.password = await bcrypt.hash(password, 10);
-    user.resetToken = null;
-    user.resetTokenExpiry = null;
+    // Update password and clear reset token
+    user.password = await bcrypt.hash(password, 12);
+    user.resetToken = undefined;
+    user.resetTokenExpiry = undefined;
     await user.save();
 
-    res.status(200).json({ message: "Password updated" });
+    res.status(200).json({ 
+      success: true,
+      message: 'Password updated successfully' 
+    });
   } catch (err) {
-    res.status(500).json({ message: "Error resetting password" });
+    console.error('Reset password error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error resetting password',
+      error: err.message 
+    });
   }
 });
 
- 
- 
-app.get('/', (req, res) => {
-  res.send('✅ Server is working!');
-});
-// Profile Routes -----------------------------------------------------------------
-app.get("/api/profiles/me", authMiddleware, async (req, res) => {
-  const profile = await Profile.findOne({ userId: req.user._id });
-  if (!profile) return res.status(404).json({ message: "Profile not found" });
-
-  res.status(200).json(profile);
-});
-
+// Profile Routes ----------------------------------------------------------------
 
 // Create or get user profile
-app.post('/api/profiles', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
-
+app.post('/api/profiles', authMiddleware, async (req, res) => {
   try {
     const { username } = req.body;
     
-    // Check if username is available
-    const existingProfile = await Project.findOne({ username });
-    if (existingProfile) {
-      return res.status(400).json({ message: "Username already taken" });
+    if (!username) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Username is required' 
+      });
     }
 
-    // Create new profile with all fields
+    // Check if username is taken
+    const existingProfile = await Project.findOne({ username });
+    if (existingProfile) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Username already taken' 
+      });
+    }
+
+    // Create new profile
     const newProfile = await Project.create({
       userId: req.user._id,
       username,
@@ -464,59 +734,94 @@ app.post('/api/profiles', async (req, res) => {
       }
     });
 
-    res.status(201).json(newProfile);
+    res.status(201).json({ 
+      success: true,
+      profile: newProfile 
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error('Create profile error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error creating profile',
+      error: err.message 
+    });
   }
 });
 
 // Get current user's profile
-app.get("/api/profiles/:userId", async (req, res) => {
-  const profile = await Profile.findOne({ userId: req.params.userId });
-  if (!profile) return res.status(404).json({ message: "Profile not found" });
+app.get('/api/profiles/me', authMiddleware, async (req, res) => {
+  try {
+    const profile = await Project.findOne({ userId: req.user._id });
+    if (!profile) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Profile not found' 
+      });
+    }
 
-  res.status(200).json(profile);
+    res.status(200).json({ 
+      success: true,
+      profile 
+    });
+  } catch (err) {
+    console.error('Get profile error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error fetching profile',
+      error: err.message 
+    });
+  }
 });
 
-// Update profile information
-// Update profile information
-app.put('/api/profiles/me/profile', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
-
+// Update profile
+app.put('/api/profiles/me/profile', authMiddleware, async (req, res) => {
   try {
     const { profile } = req.body;
     
+    if (!profile) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Profile data is required' 
+      });
+    }
+
     const updatedProfile = await Project.findOneAndUpdate(
       { userId: req.user._id },
       { $set: { profile } },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedProfile) {
-      return res.status(404).json({ message: "Profile not found" });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Profile not found' 
+      });
     }
 
-    res.status(200).json(updatedProfile);
+    res.status(200).json({ 
+      success: true,
+      profile: updatedProfile 
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error", error: err.message });
+    console.error('Update profile error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error updating profile',
+      error: err.message 
+    });
   }
 });
 
-
-// Update template preference
-app.put('/api/profiles/me/template', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
-
+// Update template
+app.put('/api/profiles/me/template', authMiddleware, async (req, res) => {
   try {
-    const validTemplates = ['default', 'minimal', 'professional'];
     const { template } = req.body;
-
-    if (template && !validTemplates.includes(template)) {
-      return res.status(400).json({ message: "Invalid template" });
+    
+    if (!template) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Template is required' 
+      });
     }
 
     const updatedProfile = await Project.findOneAndUpdate(
@@ -526,104 +831,204 @@ app.put('/api/profiles/me/template', async (req, res) => {
     );
 
     if (!updatedProfile) {
-      return res.status(404).json({ message: "Profile not found" });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Profile not found' 
+      });
     }
 
-    res.json(updatedProfile);
+    res.status(200).json({ 
+      success: true,
+      profile: updatedProfile 
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error('Update template error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error updating template',
+      error: err.message 
+    });
   }
 });
 
-// Public profile route
+// Get public profile by username
 app.get('/api/profiles/:username', async (req, res) => {
   try {
     const profile = await Project.findOne({ username: req.params.username });
     if (!profile) {
-      return res.status(404).json({ message: "Profile not found" });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Profile not found' 
+      });
     }
-    res.json(profile);
+
+    res.status(200).json({ 
+      success: true,
+      profile 
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error('Get public profile error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error fetching public profile',
+      error: err.message 
+    });
   }
 });
 
-// Project CRUD Routes (unchanged) ------------------------------------------------
-app.post('/api/profiles/me/projects', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
+// Project CRUD Routes -----------------------------------------------------------
 
+// Create project
+app.post('/api/profiles/me/projects', authMiddleware, async (req, res) => {
   try {
-    const profile = await Project.findOne({ userId: req.user._id });
-    if (!profile) {
-      return res.status(404).json({ message: "Profile not found" });
+    const projectData = req.body;
+    
+    if (!projectData || !projectData.title) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Project title is required' 
+      });
     }
 
-    profile.projects.push(req.body);
+    const profile = await Project.findOne({ userId: req.user._id });
+    if (!profile) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Profile not found' 
+      });
+    }
+
+    profile.projects.push(projectData);
     await profile.save();
-    res.status(201).json(profile);
+
+    res.status(201).json({ 
+      success: true,
+      profile 
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error('Create project error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error creating project',
+      error: err.message 
+    });
   }
 });
 
-app.put('/api/profiles/me/projects/:projectId', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
-
+// Update project
+app.put('/api/profiles/me/projects/:projectId', authMiddleware, async (req, res) => {
   try {
+    const { projectId } = req.params;
+    const projectData = req.body;
+    
+    if (!projectData) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Project data is required' 
+      });
+    }
+
     const profile = await Project.findOne({ userId: req.user._id });
     if (!profile) {
-      return res.status(404).json({ message: "Profile not found" });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Profile not found' 
+      });
     }
 
     const projectIndex = profile.projects.findIndex(
-      p => p._id.toString() === req.params.projectId
+      p => p._id.toString() === projectId
     );
 
     if (projectIndex === -1) {
-      return res.status(404).json({ message: "Project not found" });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Project not found' 
+      });
     }
 
     profile.projects[projectIndex] = {
       ...profile.projects[projectIndex].toObject(),
-      ...req.body
+      ...projectData
     };
 
     await profile.save();
-    res.json(profile);
+
+    res.status(200).json({ 
+      success: true,
+      profile 
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error('Update project error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error updating project',
+      error: err.message 
+    });
   }
 });
 
-app.delete('/api/profiles/me/projects/:projectId', async (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
-
+// Delete project
+app.delete('/api/profiles/me/projects/:projectId', authMiddleware, async (req, res) => {
   try {
+    const { projectId } = req.params;
+
     const profile = await Project.findOne({ userId: req.user._id });
     if (!profile) {
-      return res.status(404).json({ message: "Profile not found" });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Profile not found' 
+      });
     }
 
+    const initialLength = profile.projects.length;
     profile.projects = profile.projects.filter(
-      p => p._id.toString() !== req.params.projectId
+      p => p._id.toString() !== projectId
     );
 
+    if (profile.projects.length === initialLength) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Project not found' 
+      });
+    }
+
     await profile.save();
-    res.json(profile);
+
+    res.status(200).json({ 
+      success: true,
+      profile 
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error('Delete project error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error deleting project',
+      error: err.message 
+    });
   }
 });
 
-// Admin Routes (unchanged) -------------------------------------------------------
+// Error Handling Middleware ------------------------------------------------------
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ 
+    success: false,
+    message: 'Internal server error',
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
+});
 
-// Start Server
+// 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    success: false,
+    message: 'Endpoint not found' 
+  });
+});
+
+// Start Server -------------------------------------------------------------------
 app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+  console.log(`Server running on port ${port}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });

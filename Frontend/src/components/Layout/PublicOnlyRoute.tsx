@@ -7,7 +7,7 @@ type PublicOnlyRouteProps = {
   redirectPath?: string;
 };
 
-const PublicOnlyRoute = ({ user, children, redirectPath = "/dash" }: PublicOnlyRouteProps) => {
+const PublicOnlyRoute = ({ user, children, redirectPath = "/" }: PublicOnlyRouteProps) => {
   if (user) {
     return <Navigate to={redirectPath} replace />;
   }

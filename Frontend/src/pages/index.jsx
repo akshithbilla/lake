@@ -27,6 +27,61 @@ const defaultProfile = {
   }
 };
 
+// API Service with JWT support
+const apiService = {
+  getToken: () => localStorage.getItem('token'),
+
+  setToken: (token) => localStorage.setItem('token', token),
+
+  clearToken: () => localStorage.removeItem('token'),
+
+  request: async (endpoint, options = {}) => {
+    const token = apiService.getToken();
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      ...options.headers
+    };
+
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`${process.env.BACKEND_URL}${endpoint}`, {
+      ...options,
+      headers
+    });
+
+    if (response.status === 401) {
+      apiService.clearToken();
+      throw new Error('Session expired. Please login again.');
+    }
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const error = new Error(errorData.message || 'Request failed');
+      error.status = response.status;
+      throw error;
+    }
+
+    return response.json();
+  },
+
+  // Specific API methods
+  checkAuth: async () => apiService.request('/check-auth'),
+  
+  getProfile: async () => apiService.request('/api/profiles/me'),
+  
+  checkUsername: async (username) => 
+    apiService.request(`/api/profiles/check-username?username=${encodeURIComponent(username)}`),
+  
+  createProfile: async (username) => 
+    apiService.request('/api/profiles', {
+      method: 'POST',
+      body: JSON.stringify({ username })
+    })
+};
+
 export default function IndexPage() {
   const [profile, setProfile] = useState(defaultProfile);
   const [activeTab, setActiveTab] = useState('projects');
@@ -43,44 +98,16 @@ export default function IndexPage() {
       setError(null);
 
       // First check authentication status
-      const authCheck = await fetch(`${process.env.BACKEND_URL}/check-auth`, {
-        credentials: 'include',
-        headers: {
-          'Accept': 'application/json'
-        }
-      });
-
-      if (!authCheck.ok) {
-        if (authCheck.status === 401) {
-          navigate('/login');
-          return;
-        }
-        throw new Error(`Auth check failed with status ${authCheck.status}`);
-      }
-
-      const authData = await authCheck.json();
+      const authData = await apiService.checkAuth();
+      
       if (!authData.authenticated) {
         navigate('/login');
         return;
       }
 
       // Then fetch profile data
-      const profileRes = await fetch(`${process.env.BACKEND_URL}/api/profiles/me`, {
-        credentials: 'include',
-        headers: {
-          'Accept': 'application/json'
-        }
-      });
-
-      if (!profileRes.ok) {
-        if (profileRes.status === 404) {
-          setActiveTab('setup');
-          return;
-        }
-        throw new Error('Failed to fetch profile');
-      }
-
-      const profileData = await profileRes.json();
+      const profileData = await apiService.getProfile();
+      
       setProfile({
         ...defaultProfile,
         ...profileData,
@@ -94,9 +121,9 @@ export default function IndexPage() {
       console.error('Profile fetch error:', err);
       setError(err.message);
       
-      if (err.message.includes('401') || err.message.includes('auth')) {
+      if (err.status === 401) {
         navigate('/login');
-      } else {
+      } else if (err.status === 404) {
         setActiveTab('setup');
       }
     } finally {
@@ -105,6 +132,12 @@ export default function IndexPage() {
   };
 
   useEffect(() => {
+    // Check if we have a token first
+    if (!apiService.getToken()) {
+      navigate('/login');
+      return;
+    }
+    
     fetchProfile();
   }, []);
 
@@ -114,30 +147,13 @@ export default function IndexPage() {
       setError(null);
       
       // Check username availability
-      const checkRes = await fetch(
-        `${process.env.BACKEND_URL}/api/profiles/check-username?username=${encodeURIComponent(username)}`,
-        { credentials: 'include' }
-      );
+      const checkData = await apiService.checkUsername(username);
       
-      if (!checkRes.ok) throw new Error('Failed to check username');
-      
-      const checkData = await checkRes.json();
       if (checkData.exists) throw new Error('Username already taken');
       
       // Create profile
-      const res = await fetch(`${process.env.BACKEND_URL}/api/profiles`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-        credentials: 'include'
-      });
-      
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.message || 'Failed to create profile');
-      }
+      const data = await apiService.createProfile(username);
 
-      const data = await res.json();
       setProfile({
         ...defaultProfile,
         ...data,

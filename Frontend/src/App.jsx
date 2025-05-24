@@ -14,41 +14,45 @@ import ProtectedRoute from "./components/Layout/ProtectedRoute";
 import PublicOnlyRoute from "./components/Layout/PublicOnlyRoute";
 
 // Configure axios defaults
-axios.defaults.baseURL = import.meta.env.VITE_BACKEND_URL;
 axios.defaults.withCredentials = true;
+axios.defaults.baseURL = import.meta.env.VITE_BACKEND_URL;
 
 function App() {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [initialAuthCheckDone, setInitialAuthCheckDone] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const authCheckTimeout = useRef(null);
 
-  // Add axios response interceptor for handling 401 errors
+  // Add axios response interceptor
   useEffect(() => {
     const interceptor = axios.interceptors.response.use(
       response => response,
       error => {
         if (error.response?.status === 401) {
           setUser(null);
-          if (location.pathname !== "/login") {
-            navigate("/login", { state: { from: location }, replace: true });
+          // Only redirect if not already on login page
+          if (!location.pathname.startsWith("/login")) {
+            navigate("/login", { 
+              state: { from: location },
+              replace: true  // Prevent history buildup
+            });
           }
         }
         return Promise.reject(error);
       }
     );
 
-    return () => {
-      axios.interceptors.response.eject(interceptor);
-    };
+    return () => axios.interceptors.response.eject(interceptor);
   }, [navigate, location]);
 
   const checkAuth = useCallback(async () => {
     try {
       const { data } = await axios.get("/check-auth");
+      
       if (data.authenticated) {
         setUser(data.user);
-        // If on login/signup page but already authenticated, redirect to dashboard
+        // Redirect from auth pages if already authenticated
         if (["/login", "/signup"].includes(location.pathname)) {
           navigate("/dashboard", { replace: true });
         }
@@ -58,36 +62,39 @@ function App() {
     } catch (error) {
       setUser(null);
     } finally {
-      setLoading(false);
+      if (!initialAuthCheckDone) setInitialAuthCheckDone(true);
     }
-  }, [navigate, location.pathname]);
+  }, [navigate, location.pathname, initialAuthCheckDone]);
 
-  // Debounced auth check on initial load and route changes
+  // Debounced auth check
   useEffect(() => {
-    const timer = setTimeout(() => {
+    if (authCheckTimeout.current) {
+      clearTimeout(authCheckTimeout.current);
+    }
+
+    authCheckTimeout.current = setTimeout(() => {
       checkAuth();
-    }, 200);
+    }, 300); // 300ms debounce
 
-    return () => clearTimeout(timer);
-  }, [checkAuth]);
+    return () => {
+      if (authCheckTimeout.current) {
+        clearTimeout(authCheckTimeout.current);
+      }
+    };
+  }, [checkAuth, location.pathname]);
 
-  // Show loading state only on initial load
-  if (loading && location.pathname !== "/" && !user) {
+  // Show loading only for initial auth check
+  if (!initialAuthCheckDone) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Checking authentication...</p>
-        </div>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
       </div>
     );
   }
 
-  // Determine if navbar should be hidden (for public profile pages)
-  const isPublicProfileRoute = /^\/[^/]+$/.test(location.pathname);
-  const hideNavbar = isPublicProfileRoute && !["/", "/login", "/signup"].some(
-    route => location.pathname.startsWith(route)
-  );
+  // Determine if navbar should be hidden
+  const hideNavbar = /^\/[^/]+$/.test(location.pathname) && 
+    !["/", "/login", "/signup"].some(route => location.pathname.startsWith(route));
 
   return (
     <>
@@ -95,38 +102,26 @@ function App() {
       <Routes>
         {/* Public routes */}
         <Route path="/" element={<Home user={user} />} />
-        <Route path="/verify-email/:token" element={<VerifyEmailPage />} />
-        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-        <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+        <Route path="/login" element={
+          <PublicOnlyRoute user={user}>
+            <LoginPage setUser={setUser} />
+          </PublicOnlyRoute>
+        } />
+        <Route path="/signup" element={
+          <PublicOnlyRoute user={user}>
+            <SignupPage />
+          </PublicOnlyRoute>
+        } />
+        
+        {/* Protected routes */}
+        <Route path="/dashboard" element={
+          <ProtectedRoute user={user}>
+            <IndexPage />
+          </ProtectedRoute>
+        } />
+        
+        {/* Other routes */}
         <Route path="/:username" element={<PublicProfilePage />} />
-        
-        {/* Auth-only routes */}
-        <Route
-          path="/dashboard"
-          element={
-            <ProtectedRoute user={user}>
-              <IndexPage />
-            </ProtectedRoute>
-          }
-        />
-        
-        {/* Public-only routes (no access when logged in) */}
-        <Route
-          path="/login"
-          element={
-            <PublicOnlyRoute user={user}>
-              <LoginPage setUser={setUser} />
-            </PublicOnlyRoute>
-          }
-        />
-        <Route
-          path="/signup"
-          element={
-            <PublicOnlyRoute user={user}>
-              <SignupPage />
-            </PublicOnlyRoute>
-          }
-        />
       </Routes>
     </>
   );

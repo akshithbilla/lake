@@ -368,8 +368,10 @@ app.post("/reset-password/:token", async (req, res) => {
   }
 });
 
+// Add caching to check-auth endpoint
 app.get("/check-auth", authenticateJWT, (req, res) => {
-  res.status(200).json({
+  res.set('Cache-Control', 'no-store'); // Prevent caching of auth state
+  res.json({
     authenticated: true,
     user: req.user
   });

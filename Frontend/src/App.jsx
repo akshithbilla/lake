@@ -6,10 +6,12 @@ import VerifyEmailPage from "./auth/VerifyEmailPage";
 import ForgotPasswordPage from "./auth/ForgotPasswordPage";
 import ResetPasswordPage from "./auth/ResetPasswordPage";
 import IndexPage from "./pages/index";
+
 import PublicProfilePage from "./pages/PublicProfilePage";
 import { Navbar } from "./components/navbar";
 import LoginPage from "./auth/LoginPage";
 import SignupPage from "./auth/SignupPage";
+//import PageNotFound from "./config/pagenotfound";
 import ProtectedRoute from "./components/Layout/ProtectedRoute.tsx";
 import PublicOnlyRoute from "./components/Layout/PublicOnlyRoute";
 
@@ -45,7 +47,7 @@ function App() {
     return <div className="loader-container">Loading...</div>;
   }
 
-  const isPublicProfileRoute = /^\/[^/]+$/.test(location.pathname);
+  const isPublicProfileRoute = /^\/[^/]+$/.test(location.pathname); // Matches "/username"
   const knownStaticRoutes = [
     "/", "/login", "/signup", "/forgot-password", "/reset-password", "/verify-email"
   ];
@@ -60,12 +62,7 @@ function App() {
     <>
       {!hideNavbar && <Navbar user={user} setUser={setUser} />}
       <Routes>
-        {/* Single root route that handles both cases */}
-        <Route 
-          path="/" 
-          element={user ? <IndexPage /> : <Home user={user} />} 
-        />
-        
+        <Route path="/" element={<Home user={user} />} />
         <Route
           path="/verify-email/:token"
           element={<VerifyEmailPage refreshUser={checkAuth} />}
@@ -91,7 +88,16 @@ function App() {
             </PublicOnlyRoute>
           }
         />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute user={user}>
+              <IndexPage />
+            </ProtectedRoute>
+          }
+        />
         <Route path="/:username" element={<PublicProfilePage />} />
+       {/* *<Route path="*" element={<PageNotFound />} /> */}
       </Routes>
     </>
   );

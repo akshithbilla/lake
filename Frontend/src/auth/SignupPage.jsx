@@ -80,8 +80,7 @@ const SignupPage = () => {
   };
 
   const handleGoogleAuth = () => {
-   window.location.href = `${import.meta.env.VITE_BACKEND_URL}/auth/google`;
-
+    window.location.href = `${import.meta.env.VITE_BACKEND_URL}/auth/google`;
   };
 
   return (
@@ -193,7 +192,6 @@ const SignupPage = () => {
           >
             Sign Up with Google
           </Button>
-           
         </div>
 
         <p className="text-center text-small">
@@ -209,7 +207,7 @@ const SignupPage = () => {
         </p>
       </div>
 
-      {/* ✅ Email Verification Popup */}
+      {/* Email Verification Popup */}
       <Modal
         isOpen={showPopup}
         onClose={handlePopupConfirm}

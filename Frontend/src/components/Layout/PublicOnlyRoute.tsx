@@ -1,5 +1,5 @@
 // components/Layout/PublicOnlyRoute.tsx
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 
 type PublicOnlyRouteProps = {
   user: any;
@@ -7,9 +7,11 @@ type PublicOnlyRouteProps = {
   redirectPath?: string;
 };
 
-const PublicOnlyRoute = ({ user, children, redirectPath = "/" }: PublicOnlyRouteProps) => {
+const PublicOnlyRoute = ({ user, children, redirectPath = "/dashboard" }: PublicOnlyRouteProps) => {
+  const location = useLocation();
+
   if (user) {
-    return <Navigate to={redirectPath} replace />;
+    return <Navigate to={redirectPath} state={{ from: location }} replace />;
   }
 
   return children;

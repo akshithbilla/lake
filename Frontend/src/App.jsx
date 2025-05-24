@@ -1,67 +1,82 @@
-import axios from "axios";
-import { Route, Routes, useNavigate, useLocation } from "react-router-dom";
-import { useEffect, useState, useCallback } from "react";
-import Home from "./auth/Home";
-import VerifyEmailPage from "./auth/VerifyEmailPage";
-import ForgotPasswordPage from "./auth/ForgotPasswordPage";
-import ResetPasswordPage from "./auth/ResetPasswordPage";
+// App.jsx
+import { useState, useEffect } from 'react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import Navbar from './components/Navbar';
+import Home from './pages/Home';
+import VerifyEmailPage from './pages/VerifyEmailPage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
+import LoginPage from './pages/LoginPage';
+import SignupPage from './pages/SignupPage';
 import IndexPage from "./pages/index";
-
-import PublicProfilePage from "./pages/PublicProfilePage";
-import { Navbar } from "./components/navbar";
-import LoginPage from "./auth/LoginPage";
-import SignupPage from "./auth/SignupPage";
-//import PageNotFound from "./config/pagenotfound";
-import ProtectedRoute from "./components/Layout/ProtectedRoute.tsx";
-import PublicOnlyRoute from "./components/Layout/PublicOnlyRoute";
+import PublicProfilePage from './pages/PublicProfilePage';
+import PageNotFound from './pages/PageNotFound';
+import ProtectedRoute from './components/Layout/ProtectedRoute';
+import PublicOnlyRoute from './components/Layout/PublicOnlyRoute';
 
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [hideNavbar, setHideNavbar] = useState(false);
   const navigate = useNavigate();
-  const location = useLocation();
 
-  const checkAuth = useCallback(async () => {
-    try {
-      const response = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/check-auth`, {
-        withCredentials: true,
-      });
-      if (response.data.authenticated) {
-        setUser(response.data.user);
-      } else {
-        setUser(null);
-      }
-    } catch (error) {
-      console.error("Auth check failed:", error);
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // Check auth status on initial load
   useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (token) {
+          const response = await axios.get('/check-auth', {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (response.data.authenticated) {
+            setUser(response.data.user);
+            // Redirect to dashboard if authenticated and on home page
+            if (window.location.pathname === '/') {
+              navigate('/dashboard');
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Auth check failed:', err);
+        localStorage.removeItem('token');
+      } finally {
+        setLoading(false);
+      }
+    };
+
     checkAuth();
-  }, [checkAuth]);
+  }, [navigate]);
+
+  const checkAuth = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (token) {
+        const response = await axios.get('/check-auth', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (response.data.authenticated) {
+          setUser(response.data.user);
+          return true;
+        }
+      }
+      return false;
+    } catch (err) {
+      console.error('Auth check failed:', err);
+      return false;
+    }
+  };
 
   if (loading) {
-    return <div className="loader-container">Loading...</div>;
+    return <div>Loading...</div>;
   }
-
-  const isPublicProfileRoute = /^\/[^/]+$/.test(location.pathname); // Matches "/username"
-  const knownStaticRoutes = [
-    "/", "/login", "/signup", "/forgot-password", "/reset-password", "/verify-email"
-  ];
-
-  const isKnownRoute = knownStaticRoutes.some(
-    (route) => location.pathname === route || location.pathname.startsWith(route + "/")
-  );
-
-  const hideNavbar = isPublicProfileRoute && !isKnownRoute;
 
   return (
     <>
       {!hideNavbar && <Navbar user={user} setUser={setUser} />}
       <Routes>
+        {/* Public routes */}
         <Route path="/" element={<Home user={user} />} />
         <Route
           path="/verify-email/:token"
@@ -88,16 +103,22 @@ function App() {
             </PublicOnlyRoute>
           }
         />
+        
+        {/* Protected routes */}
         <Route
-          path="/"
+          path="/dashboard"
           element={
             <ProtectedRoute user={user}>
-              <IndexPage />
+              <IndexPage user={user} />
             </ProtectedRoute>
           }
         />
+        
+        {/* Public profile route */}
         <Route path="/:username" element={<PublicProfilePage />} />
-       {/* *<Route path="*" element={<PageNotFound />} /> */}
+        
+        {/* 404 route */}
+        <Route path="*" element={<PageNotFound />} />
       </Routes>
     </>
   );

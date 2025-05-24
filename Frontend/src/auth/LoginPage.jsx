@@ -5,8 +5,6 @@ import { useNavigate, Link as RouterLink } from "react-router-dom";
 import { Button, Input, Checkbox, Link, Form, Divider } from "@heroui/react";
 import { Icon } from "@iconify/react";
 
-//import { AcmeIcon } from "./acme"; // Ensure this component exists or replace with your own logo
-
 const LoginPage = ({ setUser }) => {
   const [isVisible, setIsVisible] = useState(false);
   const [error, setError] = useState('');
@@ -34,8 +32,9 @@ const LoginPage = ({ setUser }) => {
 
       const data = await response.json();
       if (response.ok) {
+        localStorage.setItem('token', data.token);
         setUser(data.user);
-        navigate('/');
+        navigate('/dashboard'); // Changed from '/' to '/dashboard'
       } else {
         setError(data.message || 'Login failed');
       }
@@ -47,14 +46,13 @@ const LoginPage = ({ setUser }) => {
   };
 
   const handleGoogleAuth = () => {
-     window.location.href = `${import.meta.env.VITE_BACKEND_URL}/auth/google`;
+    window.location.href = `${import.meta.env.VITE_BACKEND_URL}/auth/google`;
   };
 
   return (
     <div className="flex h-full w-full items-center justify-center">
       <div className="flex w-full max-w-sm flex-col gap-4 rounded-large">
         <div className="flex flex-col items-center pb-6">
-          {/*<AcmeIcon size={60} />*/}
           <p className="text-xl font-medium">Welcome Back</p>
           <p className="text-small text-default-500">Log in to your account to continue</p>
         </div>
@@ -96,7 +94,7 @@ const LoginPage = ({ setUser }) => {
             </Link>
           </div>
           <Button className="w-full" color="primary" type="submit" isLoading={loading}>
-          <span>   Sign In</span>
+            <span>Sign In</span>
           </Button>
         </Form>
 
@@ -114,7 +112,6 @@ const LoginPage = ({ setUser }) => {
           >
             Continue with Google
           </Button>
-          
         </div>
 
         <p className="text-center text-small">

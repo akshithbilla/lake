@@ -1,5 +1,5 @@
 // components/Layout/ProtectedRoute.tsx
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 
 type ProtectedRouteProps = {
   user: any;
@@ -8,8 +8,10 @@ type ProtectedRouteProps = {
 };
 
 const ProtectedRoute = ({ user, children, redirectPath = "/login" }: ProtectedRouteProps) => {
+  const location = useLocation();
+  
   if (!user) {
-    return <Navigate to={redirectPath} replace />;
+    return <Navigate to={redirectPath} state={{ from: location }} replace />;
   }
 
   return children;

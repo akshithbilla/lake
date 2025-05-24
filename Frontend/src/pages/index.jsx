@@ -13,39 +13,24 @@ import {
   Squares2X2Icon,
   SparklesIcon,
   LinkIcon,
-  CogIcon,
   CheckCircleIcon
 } from '@heroicons/react/24/outline';
 
-// Default profile structure
-const defaultProfile = {
-  username: '',
-  projects: [],
-  template: 'default',
-  stats: {
-    totalProjects: 0
-  }
-};
-
-// API Service with JWT support
+// API Service - moved to a separate file would be better
 const apiService = {
   getToken: () => localStorage.getItem('token'),
-
   setToken: (token) => localStorage.setItem('token', token),
-
   clearToken: () => localStorage.removeItem('token'),
 
-  request: async (endpoint, options = {}) => {
-    const token = apiService.getToken();
+  async request(endpoint, options = {}) {
     const headers = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       ...options.headers
     };
 
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
+    const token = this.getToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const response = await fetch(`${process.env.BACKEND_URL}${endpoint}`, {
       ...options,
@@ -53,7 +38,7 @@ const apiService = {
     });
 
     if (response.status === 401) {
-      apiService.clearToken();
+      this.clearToken();
       throw new Error('Session expired. Please login again.');
     }
 
@@ -67,19 +52,36 @@ const apiService = {
     return response.json();
   },
 
-  // Specific API methods
-  checkAuth: async () => apiService.request('/check-auth'),
+  // Auth methods
+  async checkAuth() {
+    return this.request('/check-auth');
+  },
   
-  getProfile: async () => apiService.request('/api/profiles/me'),
+  // Profile methods
+  async getProfile() {
+    return this.request('/api/profiles/me');
+  },
   
-  checkUsername: async (username) => 
-    apiService.request(`/api/profiles/check-username?username=${encodeURIComponent(username)}`),
+  async checkUsername(username) {
+    return this.request(`/api/profiles/check-username?username=${encodeURIComponent(username)}`);
+  },
   
-  createProfile: async (username) => 
-    apiService.request('/api/profiles', {
+  async createProfile(username) {
+    return this.request('/api/profiles', {
       method: 'POST',
       body: JSON.stringify({ username })
-    })
+    });
+  }
+};
+
+// Default profile structure
+const defaultProfile = {
+  username: '',
+  projects: [],
+  template: 'default',
+  stats: {
+    totalProjects: 0
+  }
 };
 
 export default function IndexPage() {
@@ -97,23 +99,21 @@ export default function IndexPage() {
       setIsLoading(true);
       setError(null);
 
-      // First check authentication status
+      // Check auth first
       const authData = await apiService.checkAuth();
-      
       if (!authData.authenticated) {
         navigate('/login');
         return;
       }
 
-      // Then fetch profile data
+      // Get profile data
       const profileData = await apiService.getProfile();
-      
       setProfile({
         ...defaultProfile,
         ...profileData,
         projects: Array.isArray(profileData.projects) ? profileData.projects : [],
         stats: {
-          totalProjects: Array.isArray(profileData.projects) ? profileData.projects.length : 0
+          totalProjects: profileData.projects?.length || 0
         }
       });
 
@@ -132,7 +132,7 @@ export default function IndexPage() {
   };
 
   useEffect(() => {
-    // Check if we have a token first
+    // Redirect to login if no token
     if (!apiService.getToken()) {
       navigate('/login');
       return;
@@ -146,25 +146,22 @@ export default function IndexPage() {
       setIsLoading(true);
       setError(null);
       
-      // Check username availability
-      const checkData = await apiService.checkUsername(username);
-      
-      if (checkData.exists) throw new Error('Username already taken');
+      // Check username first
+      const { exists } = await apiService.checkUsername(username);
+      if (exists) throw new Error('Username already taken');
       
       // Create profile
       const data = await apiService.createProfile(username);
-
       setProfile({
         ...defaultProfile,
         ...data,
-        projects: Array.isArray(data.projects) ? data.projects : [],
+        projects: data.projects || [],
         stats: {
-          totalProjects: Array.isArray(data.projects) ? data.projects.length : 0
+          totalProjects: data.projects?.length || 0
         }
       });
       setActiveTab('projects');
     } catch (err) {
-      console.error('Profile creation error:', err);
       setError(err.message);
     } finally {
       setIsLoading(false);
@@ -178,13 +175,13 @@ export default function IndexPage() {
       await new Promise(resolve => setTimeout(resolve, 1500));
       setSiteGenerated(true);
     } catch (err) {
-      console.error('Site generation error:', err);
       setError('Failed to generate site');
     } finally {
       setIsGeneratingSite(false);
     }
   };
 
+  // Loading state
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50 flex items-center justify-center">
@@ -196,6 +193,7 @@ export default function IndexPage() {
     );
   }
 
+  // Error state
   if (error && activeTab !== 'setup') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50 flex items-center justify-center">
@@ -218,6 +216,7 @@ export default function IndexPage() {
     );
   }
 
+  // Profile setup (first-time users)
   if (!profile.username || activeTab === 'setup') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-50 flex items-center justify-center p-4">

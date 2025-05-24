@@ -6,122 +6,98 @@ import VerifyEmailPage from "./auth/VerifyEmailPage";
 import ForgotPasswordPage from "./auth/ForgotPasswordPage";
 import ResetPasswordPage from "./auth/ResetPasswordPage";
 import IndexPage from "./pages/index";
+
 import PublicProfilePage from "./pages/PublicProfilePage";
 import { Navbar } from "./components/navbar";
 import LoginPage from "./auth/LoginPage";
 import SignupPage from "./auth/SignupPage";
-import ProtectedRoute from "./components/Layout/ProtectedRoute";
+//import PageNotFound from "./config/pagenotfound";
+import ProtectedRoute from "./components/Layout/ProtectedRoute.tsx";
 import PublicOnlyRoute from "./components/Layout/PublicOnlyRoute";
-
-// Configure axios defaults
-axios.defaults.withCredentials = true;
-axios.defaults.baseURL = import.meta.env.VITE_BACKEND_URL;
 
 function App() {
   const [user, setUser] = useState(null);
-  const [initialAuthCheckDone, setInitialAuthCheckDone] = useState(false);
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
-  const authCheckTimeout = useRef(null);
-
-  // Add axios response interceptor
-  useEffect(() => {
-    const interceptor = axios.interceptors.response.use(
-      response => response,
-      error => {
-        if (error.response?.status === 401) {
-          setUser(null);
-          // Only redirect if not already on login page
-          if (!location.pathname.startsWith("/login")) {
-            navigate("/login", { 
-              state: { from: location },
-              replace: true  // Prevent history buildup
-            });
-          }
-        }
-        return Promise.reject(error);
-      }
-    );
-
-    return () => axios.interceptors.response.eject(interceptor);
-  }, [navigate, location]);
 
   const checkAuth = useCallback(async () => {
     try {
-      const { data } = await axios.get("/check-auth");
-      
-      if (data.authenticated) {
-        setUser(data.user);
-        // Redirect from auth pages if already authenticated
-        if (["/login", "/signup"].includes(location.pathname)) {
-          navigate("/dashboard", { replace: true });
-        }
+      const response = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/check-auth`, {
+        withCredentials: true,
+      });
+      if (response.data.authenticated) {
+        setUser(response.data.user);
       } else {
         setUser(null);
       }
     } catch (error) {
+      console.error("Auth check failed:", error);
       setUser(null);
     } finally {
-      if (!initialAuthCheckDone) setInitialAuthCheckDone(true);
+      setLoading(false);
     }
-  }, [navigate, location.pathname, initialAuthCheckDone]);
+  }, []);
 
-  // Debounced auth check
   useEffect(() => {
-    if (authCheckTimeout.current) {
-      clearTimeout(authCheckTimeout.current);
-    }
+    checkAuth();
+  }, [checkAuth]);
 
-    authCheckTimeout.current = setTimeout(() => {
-      checkAuth();
-    }, 300); // 300ms debounce
-
-    return () => {
-      if (authCheckTimeout.current) {
-        clearTimeout(authCheckTimeout.current);
-      }
-    };
-  }, [checkAuth, location.pathname]);
-
-  // Show loading only for initial auth check
-  if (!initialAuthCheckDone) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-      </div>
-    );
+  if (loading) {
+    return <div className="loader-container">Loading...</div>;
   }
 
-  // Determine if navbar should be hidden
-  const hideNavbar = /^\/[^/]+$/.test(location.pathname) && 
-    !["/", "/login", "/signup"].some(route => location.pathname.startsWith(route));
+  const isPublicProfileRoute = /^\/[^/]+$/.test(location.pathname); // Matches "/username"
+  const knownStaticRoutes = [
+    "/", "/login", "/signup", "/forgot-password", "/reset-password", "/verify-email"
+  ];
+
+  const isKnownRoute = knownStaticRoutes.some(
+    (route) => location.pathname === route || location.pathname.startsWith(route + "/")
+  );
+
+  const hideNavbar = isPublicProfileRoute && !isKnownRoute;
 
   return (
     <>
       {!hideNavbar && <Navbar user={user} setUser={setUser} />}
       <Routes>
-        {/* Public routes */}
         <Route path="/" element={<Home user={user} />} />
-        <Route path="/login" element={
-          <PublicOnlyRoute user={user}>
-            <LoginPage setUser={setUser} />
-          </PublicOnlyRoute>
-        } />
-        <Route path="/signup" element={
-          <PublicOnlyRoute user={user}>
-            <SignupPage />
-          </PublicOnlyRoute>
-        } />
-        
-        {/* Protected routes */}
-        <Route path="/dashboard" element={
-          <ProtectedRoute user={user}>
-            <IndexPage />
-          </ProtectedRoute>
-        } />
-        
-        {/* Other routes */}
+        <Route
+          path="/verify-email/:token"
+          element={<VerifyEmailPage refreshUser={checkAuth} />}
+        />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route
+          path="/reset-password/:token"
+          element={<ResetPasswordPage refreshUser={checkAuth} />}
+        />
+        <Route
+          path="/login"
+          element={
+            <PublicOnlyRoute user={user}>
+              <LoginPage setUser={setUser} />
+            </PublicOnlyRoute>
+          }
+        />
+        <Route
+          path="/signup"
+          element={
+            <PublicOnlyRoute user={user}>
+              <SignupPage />
+            </PublicOnlyRoute>
+          }
+        />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute user={user}>
+              <IndexPage />
+            </ProtectedRoute>
+          }
+        />
         <Route path="/:username" element={<PublicProfilePage />} />
+       {/* *<Route path="*" element={<PageNotFound />} /> */}
       </Routes>
     </>
   );
